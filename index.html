@@ -1,0 +1,237 @@
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard de Chamados</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { text-align: center; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        th { background-color: #f2f2f2; }
+        .chart-container { margin-top: 40px; }
+        .filters { margin-top: 20px; display: flex; gap: 20px; flex-wrap: wrap; }
+        .filters label { margin-right: 5px; }
+        button { margin-top: 20px; padding: 10px 20px; }
+    </style>
+</head>
+<body>
+    <h1>Dashboard de Chamados</h1>
+    <input type="file" id="input-excel" accept=".xlsx,.xls">
+    <div class="filters">
+        <div>
+            <label for="statusFilter">Status:</label>
+            <select id="statusFilter">
+                <option value="">Todos</option>
+                <option value="Aberto">Aberto</option>
+                <option value="Fechado">Fechado</option>
+            </select>
+        </div>
+        <div>
+            <label for="faixaFilter">Faixa de Tempo:</label>
+            <select id="faixaFilter">
+                <option value="">Todas</option>
+                <option value="Até 24h">Até 24h</option>
+                <option value="24-48h">24-48h</option>
+                <option value="Acima de 48h">Acima de 48h</option>
+            </select>
+        </div>
+        <div>
+            <label for="minTempo">Tempo mínimo (h):</label>
+            <input type="number" id="minTempo" min="0">
+        </div>
+        <div>
+            <label for="maxTempo">Tempo máximo (h):</label>
+            <input type="number" id="maxTempo" min="0">
+        </div>
+        <div>
+            <label for="dataInicio">Data Início:</label>
+            <input type="date" id="dataInicio">
+        </div>
+        <div>
+            <label for="dataFim">Data Fim:</label>
+            <input type="date" id="dataFim">
+        </div>
+    </div>
+    <button onclick="exportCSV()">Exportar CSV</button>
+    <button onclick="window.print()">Imprimir / Salvar PDF</button>
+    <div id="table-container"></div>
+    <div class="chart-container">
+        <canvas id="chartStatus" width="400" height="200"></canvas>
+        <canvas id="chartFaixaTempo" width="400" height="200"></canvas>
+        <canvas id="chartDistribuicaoTempo" width="400" height="200"></canvas>
+        <canvas id="chartMediaTempo" width="400" height="200"></canvas>
+    </div>
+
+    <script>
+        let chamados = [];
+
+        document.getElementById('input-excel').addEventListener('change', function(e) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const json = XLSX.utils.sheet_to_json(sheet);
+
+                const hoje = new Date("2025-10-07T00:00:00");
+                chamados = json.map(row => {
+                    const protocolo = row["PROTOCOLO"];
+                    const dataIngresso = row["DATA DE INGRESSO"];
+                    const horaIngresso = row["HORA DE INGRESSO"];
+                    const dataTransferencia = row["DATA TRANSFERENCIA"];
+                    const horaTransferencia = row["HORA TRANSFERENCIA"];
+
+                    const status = (dataTransferencia && horaTransferencia) ? "Fechado" : "Aberto";
+
+                    const dtInicio = new Date(dataIngresso.split("/").reverse().join("-") + "T" + horaIngresso);
+                    const dtFim = (status === "Fechado") ? new Date(dataTransferencia.split("/").reverse().join("-") + "T" + horaTransferencia) : hoje;
+
+                    const tempoHoras = Math.round((dtFim - dtInicio) / 36e5);
+
+                    let faixa = "";
+                    if (status === "Fechado") {
+                        if (tempoHoras <= 24) faixa = "Até 24h";
+                        else if (tempoHoras <= 48) faixa = "24-48h";
+                        else faixa = "Acima de 48h";
+                    }
+
+                    return {protocolo, status, tempoHoras, faixa, dataIngresso};
+                });
+
+                renderDashboard();
+            };
+            reader.readAsArrayBuffer(e.target.files[0]);
+        });
+
+        function renderDashboard() {
+            const statusFilter = document.getElementById("statusFilter").value;
+            const faixaFilter = document.getElementById("faixaFilter").value;
+            const minTempo = parseInt(document.getElementById("minTempo").value) || 0;
+            const maxTempo = parseInt(document.getElementById("maxTempo").value) || Infinity;
+            const dataInicio = document.getElementById("dataInicio").value;
+            const dataFim = document.getElementById("dataFim").value;
+
+            const filtrados = chamados.filter(c => {
+                const dt = new Date(c.dataIngresso.split("/").reverse().join("-"));
+                return (!statusFilter || c.status === statusFilter) &&
+                       (!faixaFilter || c.faixa === faixaFilter) &&
+                       (c.tempoHoras >= minTempo && c.tempoHoras <= maxTempo) &&
+                       (!dataInicio || dt >= new Date(dataInicio)) &&
+                       (!dataFim || dt <= new Date(dataFim));
+            });
+
+            let html = "<table><tr><th>Protocolo</th><th>Status</th><th>Tempo (h)</th><th>Faixa de Tempo</th><th>Data de Ingresso</th></tr>";
+            filtrados.forEach(c => {
+                html += `<tr><td>${c.protocolo}</td><td>${c.status}</td><td>${c.tempoHoras}</td><td>${c.faixa || "-"}</td><td>${c.dataIngresso}</td></tr>`;
+            });
+            html += "</table>";
+            document.getElementById("table-container").innerHTML = html;
+
+            const statusCounts = filtrados.reduce((acc, c) => {
+                acc[c.status] = (acc[c.status] || 0) + 1;
+                return acc;
+            }, {});
+            new Chart(document.getElementById("chartStatus"), {
+                type: "pie",
+                data: {
+                    labels: Object.keys(statusCounts),
+                    datasets: [{
+                        data: Object.values(statusCounts),
+                        backgroundColor: ["#4CAF50", "#FF9800"]
+                    }]
+                },
+                options: {
+                    plugins: { title: { display: true, text: "Chamados Abertos vs Fechados" } }
+                }
+            });
+
+            const faixaCounts = filtrados.filter(c => c.status === "Fechado").reduce((acc, c) => {
+                acc[c.faixa] = (acc[c.faixa] || 0) + 1;
+                return acc;
+            }, {});
+            new Chart(document.getElementById("chartFaixaTempo"), {
+                type: "bar",
+                data: {
+                    labels: Object.keys(faixaCounts),
+                    datasets: [{
+                        label: "Chamados Fechados",
+                        data: Object.values(faixaCounts),
+                        backgroundColor: "#2196F3"
+                    }]
+                },
+                options: {
+                    plugins: { title: { display: true, text: "Faixa de Tempo dos Chamados Fechados" } },
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+
+            const distribuicao = {};
+            filtrados.filter(c => c.status === "Fechado").forEach(c => {
+                const faixa = Math.floor(c.tempoHoras / 5) * 5;
+                distribuicao[faixa] = (distribuicao[faixa] || 0) + 1;
+            });
+            new Chart(document.getElementById("chartDistribuicaoTempo"), {
+                type: "bar",
+                data: {
+                    labels: Object.keys(distribuicao).map(k => `${k}-${k+4}h`),
+                    datasets: [{
+                        label: "Distribuição do Tempo de Conclusão",
+                        data: Object.values(distribuicao),
+                        backgroundColor: "#9C27B0"
+                    }]
+                },
+                options: {
+                    plugins: { title: { display: true, text: "Distribuição do Tempo de Conclusão (Fechados)" } },
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+
+            const mediaPorStatus = {};
+            const contagemPorStatus = {};
+            filtrados.forEach(c => {
+                mediaPorStatus[c.status] = (mediaPorStatus[c.status] || 0) + c.tempoHoras;
+                contagemPorStatus[c.status] = (contagemPorStatus[c.status] || 0) + 1;
+            });
+            Object.keys(mediaPorStatus).forEach(k => {
+                mediaPorStatus[k] = (mediaPorStatus[k] / contagemPorStatus[k]).toFixed(1);
+            });
+            new Chart(document.getElementById("chartMediaTempo"), {
+                type: "bar",
+                data: {
+                    labels: Object.keys(mediaPorStatus),
+                    datasets: [{
+                        label: "Tempo Médio (h)",
+                        data: Object.values(mediaPorStatus),
+                        backgroundColor: "#FF5722"
+                    }]
+                },
+                options: {
+                    plugins: { title: { display: true, text: "Tempo Médio por Status" } },
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+        }
+
+        document.querySelectorAll(".filters select, .filters input").forEach(el => {
+            el.addEventListener("change", renderDashboard);
+        });
+
+        function exportCSV() {
+            const rows = [["Protocolo", "Status", "Tempo (h)", "Faixa de Tempo", "Data de Ingresso"]];
+            document.querySelectorAll("table tr").forEach((tr, i) => {
+                if (i === 0) return;
+                const cols = Array.from(tr.querySelectorAll("td")).map(td => td.innerText);
+                rows.push(cols);
+            });
+            const csvContent = rows.map(e => e.join(",")).join("\n");
+            const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+            saveAs(blob, "chamados_filtrados.csv");
+        }
+    </script>
+</body>
+</html>
